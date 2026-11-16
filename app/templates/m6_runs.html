@@ -1,4 +1,104 @@
 {% extends "base.html" %}{% block content %}
-<div class="grid module-6"><section class="panel panel--primary"><div class="panel__head"><h2>批次复核记录</h2><span class="panel__meta">M6 · {{ data.status|default('READY') }}</span></div><div class="panel__body panel__body--scroll"><table class="ledger"><thead><tr><th>字段</th><th>值</th><th>证据</th></tr></thead><tbody>{% for key, value in data.items() %}<tr><td>{{ key }}</td><td class="num">{{ value }}</td><td>R{{ loop.index }}</td></tr>{% endfor %}</tbody></table></div></section>
-<div class="stack"><section class="panel"><div class="panel__head"><h2>原因码</h2><span class="panel__meta">{{ data.reason|default('OK') }}</span></div><div class="panel__body bars"><i style="--v:74%"></i><i style="--v:47%"></i></div></section><section class="panel"><div class="panel__head"><h2>本次动作</h2><span class="panel__meta">/api/export/allocations.csv</span></div><div class="panel__body"><button class="btn btn--primary" data-endpoint="/api/export/allocations.csv">运行 批次复核</button><pre class="result">等待运行</pre></div></section></div></div>
+<div class="batch-page">
+  <section class="panel panel--primary">
+    <div class="panel__head"><h2>批次拨款台账（应得 / 已拨 / 待补 / 待追回）</h2>
+      <span class="panel__meta" id="batch-meta">未选择批次</span></div>
+    <div class="panel__body panel__body--scroll">
+      <div class="kpis kpis--mini" id="batch-kpis">
+        <div class="kpi"><b>批复总额</b><span id="k-approved">—</span></div>
+        <div class="kpi"><b>应得合计</b><span id="k-entitled">—</span></div>
+        <div class="kpi"><b>累计已拨</b><span id="k-paid">—</span></div>
+        <div class="kpi"><b>待补合计</b><span id="k-topup">—</span></div>
+        <div class="kpi"><b>待追回(未收回)</b><span id="k-outstanding">—</span></div>
+        <div class="kpi"><b>资金缺口</b><span id="k-gap">—</span></div>
+      </div>
+      <table class="ledger" id="ledger-table">
+        <thead><tr><th>项目</th><th>资格</th><th>更正前应得</th><th>更正后应得</th>
+          <th>已拨</th><th>已收回</th><th>待补</th><th>待追回</th><th>未收回</th><th>原因</th></tr></thead>
+        <tbody><tr><td colspan="10" class="empty">先在右侧建立或选择批次</td></tr></tbody>
+      </table>
+      <div class="checks" id="checks"></div>
+    </div>
+  </section>
+
+  <div class="stack">
+    <section class="panel">
+      <div class="panel__head"><h2>批次</h2><span class="panel__meta">建立 / 选择</span></div>
+      <div class="panel__body">
+        <select id="batch-select" class="field"></select>
+        <details class="formbox">
+          <summary>新建批次</summary>
+          <form id="form-batch" class="form">
+            <label>批复总额<input name="approved" value="1000.00" required></label>
+            <label>条目 JSON（id/weight/cap/eligible）<textarea name="items" rows="5">[
+  {"id": "A", "weight": 5, "cap": "300.00", "eligible": true},
+  {"id": "B", "weight": 3, "cap": "500.00", "eligible": true},
+  {"id": "C", "weight": 2, "cap": "500.00", "eligible": true}
+]</textarea></label>
+            <button class="btn btn--primary" type="submit">建立批次（v0 初始分摊）</button>
+          </form>
+        </details>
+        <a class="btn" id="export-link" href="#" download>导出同批次 CSV</a>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head"><h2>拨款 / 追回凭证</h2><span class="panel__meta">原样留痕 · 重试幂等</span></div>
+      <div class="panel__body">
+        <form id="form-pay" class="form">
+          <div class="form-row">
+            <label>凭证号<input name="voucher_id" placeholder="V-0001" required></label>
+            <label>项目<input name="project_id" placeholder="A" required></label>
+            <label>金额<input name="amount" placeholder="300.00" required></label>
+          </div>
+          <button class="btn btn--primary" type="submit">登记拨款</button>
+        </form>
+        <form id="form-recover" class="form">
+          <div class="form-row">
+            <label>追回单号<input name="recovery_id" placeholder="R-0001" required></label>
+            <label>原凭证号<input name="disbursement_ref" placeholder="V-0001" required></label>
+            <label>项目<input name="project_id" placeholder="A" required></label>
+            <label>金额<input name="amount" placeholder="50.00" required></label>
+          </div>
+          <button class="btn" type="submit">登记追回（未收回不参与再分配）</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head"><h2>资格 / 封顶更正</h2><span class="panel__meta">乐观版本 · 失败保留旧版</span></div>
+      <div class="panel__body">
+        <form id="form-correction" class="form">
+          <label>更正原因码
+            <select name="reason_code">
+              <option>ELIGIBILITY_REVOKED</option><option>ELIGIBILITY_RESTORED</option>
+              <option>CAP_REDUCED</option><option>CAP_RAISED</option><option>WEIGHT_REVISED</option>
+            </select></label>
+          <label>变更 JSON（基线取当前版本）<textarea name="changes" rows="4">[
+  {"id": "C", "eligible": false, "cap": "500.00"}
+]</textarea></label>
+          <div class="form-row">
+            <button class="btn btn--primary" type="submit">登记更正</button>
+            <button class="btn" type="button" id="btn-publish">发布并续跑</button>
+          </div>
+        </form>
+        <table class="ledger ledger--mini" id="correction-table">
+          <thead><tr><th>更正单</th><th>基线</th><th>原因</th><th>状态</th></tr></thead><tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head"><h2>更正前后对照与资金缺口</h2><span class="panel__meta" id="version-meta"></span></div>
+      <div class="panel__body panel__body--scroll">
+        <table class="ledger ledger--mini" id="compare-table">
+          <thead><tr><th>项目</th><th>更正前应得</th><th>更正后应得</th><th>差额</th><th>尾差/封顶</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <pre class="result" id="action-result">等待操作</pre>
+      </div>
+    </section>
+  </div>
+</div>
+<script src="/static/batch.js"></script>
 {% endblock %}
